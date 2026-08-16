@@ -1,0 +1,10 @@
+# Desk Health Coach — private runtime/config/data (schedule, limitation, goal, absolute-path,
+# and behavior data). Keep these entries even if preserved history remains after uninstall.
+desk-health/.staging/
+desk-health/config/
+desk-health/data/
+desk-health/state/
+desk-health/runtime/tick.log
+desk-health/dashboard.html
+desk-health/coach-summary.json
+desk-health/installed-files.txt

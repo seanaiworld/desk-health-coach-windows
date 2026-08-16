@@ -1,0 +1,119 @@
+<#
+.SYNOPSIS
+  One Windows Forms reminder dialog. Spawned as a detached child by runner.ps1.
+.DESCRIPTION
+  Never runs canonical logic itself: shows Skip/Done, enforces the minSeconds honesty
+  pause client-side, then writes exactly one immutable result file into the mode's
+  state/inbox/ via temp-file-plus-rename and exits. All text arrives as parameters,
+  never interpolated into PowerShell source and never run through Invoke-Expression.
+#>
+param(
+    [Parameter(Mandatory)][string]$ModeRoot,
+    [Parameter(Mandatory)][ValidateSet('test', 'live')][string]$Mode,
+    [Parameter(Mandatory)][string]$SlotId,
+    [Parameter(Mandatory)][string]$ScheduledTs,
+    [Parameter(Mandatory)][string]$Type,
+    [Parameter(Mandatory)][string]$OptionId,
+    [Parameter(Mandatory)][int]$MinSeconds,
+    [Parameter(Mandatory)][string]$Action,
+    [string]$Dose = '',
+    [string]$Why = '',
+    [string]$GameLine = ''
+)
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+
+$shownAt = Get-Date
+
+function Show-ReminderForm {
+    param([string]$Body, [bool]$NotSoFast)
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'Desk Health Coach'
+    $form.StartPosition = 'CenterScreen'
+    $form.TopMost = $true
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MinimizeBox = $false
+    $form.MaximizeBox = $false
+    $form.ClientSize = New-Object System.Drawing.Size(420, 220)
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $Body
+    $label.AutoSize = $false
+    $label.Size = New-Object System.Drawing.Size(380, 140)
+    $label.Location = New-Object System.Drawing.Point(20, 20)
+    $form.Controls.Add($label)
+
+    if ($NotSoFast) {
+        $warn = New-Object System.Windows.Forms.Label
+        $warn.Text = 'Not so fast -- give it a few more seconds.'
+        $warn.ForeColor = [System.Drawing.Color]::DarkRed
+        $warn.AutoSize = $false
+        $warn.Size = New-Object System.Drawing.Size(380, 20)
+        $warn.Location = New-Object System.Drawing.Point(20, 165)
+        $form.Controls.Add($warn)
+    }
+
+    $doneBtn = New-Object System.Windows.Forms.Button
+    $doneBtn.Text = 'Done'
+    $doneBtn.Size = New-Object System.Drawing.Size(100, 32)
+    $doneBtn.Location = New-Object System.Drawing.Point(210, 155)
+    $doneBtn.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+    $form.Controls.Add($doneBtn)
+    $form.AcceptButton = $doneBtn
+
+    $skipBtn = New-Object System.Windows.Forms.Button
+    $skipBtn.Text = 'Skip'
+    $skipBtn.Size = New-Object System.Drawing.Size(100, 32)
+    $skipBtn.Location = New-Object System.Drawing.Point(320, 155)
+    $skipBtn.DialogResult = [System.Windows.Forms.DialogResult]::No
+    $form.Controls.Add($skipBtn)
+
+    return $form.ShowDialog()
+}
+
+function Write-Result {
+    param([string]$Action)
+    $responseSec = [math]::Round(((Get-Date) - $shownAt).TotalSeconds, 1)
+    $result = [ordered]@{
+        slotId      = $SlotId
+        scheduledTs = $ScheduledTs
+        shownTs     = $shownAt.ToString('o')
+        type        = $Type
+        optionId    = $OptionId
+        action      = $Action
+        responseSec = $responseSec
+        mode        = $Mode
+    }
+    $inbox = Join-Path $ModeRoot 'state\inbox'
+    Protect-PathForCurrentUser -Path $inbox
+    $tmp = Join-Path $inbox (".tmp-$([guid]::NewGuid().ToString('N')).tmp")
+    [System.IO.File]::WriteAllText($tmp, ($result | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false))
+    $final = Join-Path $inbox "$SlotId.json"
+    Protect-PathForCurrentUser -Path $inbox
+    Move-Item -LiteralPath $tmp -Destination $final -Force
+}
+
+$bodyLines = @("$Type", $Action)
+if ($Dose) { $bodyLines += "Dose: $Dose" }
+if ($Why) { $bodyLines += "Why: $Why" }
+if ($GameLine) { $bodyLines += $GameLine }
+$body = ($bodyLines -join "`r`n`r`n")
+
+$notSoFast = $false
+while ($true) {
+    $choice = Show-ReminderForm -Body $body -NotSoFast $notSoFast
+    if ($choice -eq [System.Windows.Forms.DialogResult]::No) {
+        Write-Result -Action 'skipped'
+        break
+    }
+    $elapsed = ((Get-Date) - $shownAt).TotalSeconds
+    if ($elapsed -lt $MinSeconds) {
+        $notSoFast = $true
+        continue  # same action shown again, not counted as a second slot/prompt
+    }
+    Write-Result -Action 'done'
+    break
+}
