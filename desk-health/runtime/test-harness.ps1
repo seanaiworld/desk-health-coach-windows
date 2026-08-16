@@ -22,8 +22,8 @@ $modeRoot = Get-ModeRoot -Root $root -Mode $mode
 
 function Get-TestState {
     $p = Join-Path $modeRoot 'state\state.json'
-    if (Test-Path -LiteralPath $p) { return (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json -AsHashtable) }
-    return [ordered]@{}
+    if (Test-Path -LiteralPath $p) { return (ConvertFrom-JsonToHashtable (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json)) }
+    return @{}
 }
 function Save-TestState($s) { Set-AtomicJson -Path (Join-Path $modeRoot 'state\state.json') -Object $s }
 

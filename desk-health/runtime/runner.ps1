@@ -22,7 +22,7 @@ $root = Get-DeskHealthRoot
 function Initialize-PrivateDirs {
     param([string]$ModeRoot)
     foreach ($d in @('state', 'data', 'runtime')) {
-        $p = Join-Path (if ($d -eq 'runtime') { $root } else { $ModeRoot }) $d
+        $p = Join-Path $(if ($d -eq 'runtime') { $root } else { $ModeRoot }) $d
         Protect-PathForCurrentUser -Path $p
     }
     Protect-PathForCurrentUser -Path (Join-Path $ModeRoot 'state\inbox')
@@ -33,7 +33,10 @@ function Get-State {
     param([string]$ModeRoot)
     $path = Join-Path $ModeRoot 'state\state.json'
     if (-not (Test-Path -LiteralPath $path)) {
-        return [ordered]@{
+        # Plain @{} (not [ordered]@{}), matching the Hashtable shape ConvertFrom-JsonToHashtable
+        # produces on every subsequent load -- an OrderedDictionary lacks ContainsKey(), which
+        # callers rely on for both fresh and reloaded state.
+        return @{
             currentDay      = (Get-Date).ToString('yyyy-MM-dd')
             pauseUntil      = $null
             lastTick        = $null
@@ -46,7 +49,7 @@ function Get-State {
             lastMilestone   = @{}
         }
     }
-    return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable)
+    return (ConvertFrom-JsonToHashtable (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json))
 }
 
 function Save-State {
@@ -69,7 +72,7 @@ function Get-Summary {
             lastEligibleWorkday = $null
         }
     }
-    return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable)
+    return (ConvertFrom-JsonToHashtable (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json))
 }
 
 function Save-Summary {
@@ -139,46 +142,69 @@ function Invoke-CommandRequests {
             continue
         }
 
+        # A request that throws must never wedge the runner: the file would otherwise stay on
+        # disk and re-throw on every subsequent tick, permanently stopping all reminders. Any
+        # failure quarantines the offending request so the loop can keep running.
+        try {
         switch ($req.type) {
             'pause' {
-                $State.pauseUntil = $req.payload.until
+                $State.pauseUntil = Get-PropOrNull $req.payload 'until'
             }
             'resume' {
                 $State.pauseUntil = $null
+            }
+            'fire' {
+                # /desk-health test fire <type>: bypasses the schedule due-check for one slot
+                # only, but still spawns the dialog through the same lock/rotation/dialog.ps1
+                # path as a normal scheduled slot -- consumed in Invoke-Tick, not here, since
+                # this function doesn't have $Root or the loaded routine/library rows.
+                $State.pendingFire = Get-PropOrNull $req.payload 'type'
             }
             default {
                 # routine-edit / settings-edit / undo / mirror-repair are applied by the
                 # skill's edit flow calling into this same request path; the concrete
                 # config mutation is written here, atomically, by the runner alone.
-                if ($req.payload.settingsPatch) {
+                # Every payload field is read via Get-PropOrNull: each command type carries
+                # only the subset it needs, and a bare $req.payload.x on an absent field is a
+                # terminating error under StrictMode.
+                $settingsPatch = Get-PropOrNull $req.payload 'settingsPatch'
+                if ($settingsPatch) {
                     $settingsPath = Join-Path $ModeRoot 'config\settings.tsv'
                     $rows = Import-Tsv2 -Path $settingsPath
                     $row = $rows[0]
-                    foreach ($k in $req.payload.settingsPatch.PSObject.Properties.Name) {
-                        $row.$k = $req.payload.settingsPatch.$k
+                    foreach ($k in $settingsPatch.PSObject.Properties.Name) {
+                        $row.$k = $settingsPatch.$k
                     }
                     Export-Tsv2 -Path $settingsPath -Rows $rows
                 }
-                if ($req.payload.routineRows) {
-                    Export-Tsv2 -Path (Join-Path $ModeRoot 'config\routine.tsv') -Rows $req.payload.routineRows
+                $routineRows = Get-PropOrNull $req.payload 'routineRows'
+                if ($routineRows) {
+                    Export-Tsv2 -Path (Join-Path $ModeRoot 'config\routine.tsv') -Rows $routineRows
                 }
-                if ($req.payload.snapshotPrevious) {
-                    $State.previousConfigSnapshot = $req.payload.snapshotPrevious
+                $snapshotPrevious = Get-PropOrNull $req.payload 'snapshotPrevious'
+                if ($snapshotPrevious) {
+                    $State.previousConfigSnapshot = $snapshotPrevious
                 }
                 $State.configRevision = [int]$State.configRevision + 1
                 Add-JsonlLine -Path (Join-Path $ModeRoot 'data\changes.jsonl') -Object ([ordered]@{
                         ts        = (Get-Date).ToString('o')
                         requestId = $req.requestId
                         type      = $req.type
-                        area      = $req.payload.area
-                        before    = $req.payload.before
-                        after     = $req.payload.after
+                        area      = Get-PropOrNull $req.payload 'area'
+                        before    = Get-PropOrNull $req.payload 'before'
+                        after     = Get-PropOrNull $req.payload 'after'
                         revision  = $State.configRevision
                     })
             }
         }
         $State.appliedRequests[[string]$req.requestId] = @{ appliedAt = (Get-Date).ToString('o'); revision = $State.configRevision }
         Remove-Item -LiteralPath $file.FullName -Force
+        } catch {
+            Write-Warning "command request $($file.Name) failed and was quarantined: $_"
+            $quarantine = Join-Path $ModeRoot 'data\test-runs\quarantine'
+            Protect-PathForCurrentUser -Path $quarantine
+            Move-Item -LiteralPath $file.FullName -Destination (Join-Path $quarantine $file.Name) -Force
+        }
     }
     return $State
 }
@@ -200,8 +226,8 @@ function Receive-DialogResult {
             continue
         }
 
-        $doneCountToday = [int]($Summary.byDay["$($State.currentDay)"].done)
-        if (-not $doneCountToday) { $doneCountToday = 0 }
+        $todayBucketForCount = $Summary.byDay["$($State.currentDay)"]
+        $doneCountToday = if ($todayBucketForCount) { [int]$todayBucketForCount.done } else { 0 }
 
         $outcome = if ($res.action -eq 'done') { 'done' } else { 'skipped' }
         $points = 0
@@ -286,6 +312,48 @@ function Invoke-Tick {
 
     $settingsRows = Import-Tsv2 -Path (Join-Path $modeRoot 'config\settings.tsv')
     $routineRows = Import-Tsv2 -Path (Join-Path $modeRoot 'config\routine.tsv')
+
+    if ($state.ContainsKey('pendingFire') -and $state.pendingFire) {
+        # Bypasses the workday/hours/quiet/pause due-check on purpose (this is an explicit,
+        # human-triggered test action), but still goes through the same lock/rotation/dialog.ps1
+        # spawn path as a normal scheduled slot -- never fabricates a result directly.
+        $fireType = [string]$state.pendingFire
+        $fireLockDir = Join-Path $modeRoot 'state\dialog.lock'
+        $fireDialogActive = Test-Path -LiteralPath $fireLockDir
+        if ($fireDialogActive -and (Test-StaleLock -LockDir $fireLockDir)) {
+            Remove-Lock -LockDir $fireLockDir
+            $fireDialogActive = $false
+        }
+        $fireRow = $routineRows | Where-Object { $_.type -eq $fireType } | Select-Object -First 1
+        if (-not $fireRow) {
+            $state.Remove('pendingFire')
+        } elseif (-not $fireDialogActive) {
+            $fireScheduledTs = $now
+            $fireSlotId = New-SlotId -ScheduledTs $fireScheduledTs -Type $fireType -Mode $mode
+            if (-not $state.settledSlots.ContainsKey($fireSlotId)) {
+                $fireOptIds = @($fireRow.optionId -split ',' | ForEach-Object { $_.Trim() })
+                $firePrevPick = $state.rotation[[string]$fireType]
+                $fireChoices = @($fireOptIds | Where-Object { $_ -ne $firePrevPick })
+                if ($fireChoices.Count -eq 0) { $fireChoices = $fireOptIds }
+                $firePick = $fireChoices[(Get-Random -Minimum 0 -Maximum $fireChoices.Count)]
+                $state.rotation[[string]$fireType] = $firePick
+                if (New-Lock -LockDir $fireLockDir -SlotId $fireSlotId) {
+                    $fireLibRows = Import-Tsv2 -Path (Join-Path $modeRoot 'config\library.tsv')
+                    $fireLibRow = $fireLibRows | Where-Object { $_.optionId -eq $firePick } | Select-Object -First 1
+                    Start-DetachedScript -ScriptPath (Join-Path $Root 'runtime\dialog.ps1') -NamedArgs @{
+                        ModeRoot    = $modeRoot; Mode = $mode; SlotId = $fireSlotId
+                        ScheduledTs = $fireScheduledTs.ToString('o'); Type = $fireType
+                        OptionId    = $firePick; MinSeconds = $fireLibRow.minSeconds
+                        Action      = $fireLibRow.instruction; Dose = $fireLibRow.dose; Why = $fireLibRow.why
+                    }
+                    $state.lastShownTs = $now.ToString('o')
+                }
+            }
+            $state.Remove('pendingFire')
+        }
+        # else: a dialog is already active -- leave pendingFire set so it retries next tick.
+    }
+
     if ($settingsRows.Count -eq 1 -and $routineRows.Count -gt 0) {
         $settings = $settingsRows[0]
         $day3 = $now.DayOfWeek.ToString().Substring(0, 3)
@@ -335,7 +403,7 @@ function Invoke-Tick {
                         }
                         if ($now -lt $scheduledTs) { continue }
 
-                        $lastShown = $state.lastShownTs
+                        $lastShown = if ($state.ContainsKey('lastShownTs')) { $state.lastShownTs } else { $null }
                         $tooSoon = $lastShown -and (($now) - [datetime]$lastShown).TotalMinutes -lt $Global:DeskHealthActualShowFloor
 
                         # Firing after scheduledTs is only a permitted catch-up if the heartbeat
@@ -378,15 +446,12 @@ function Invoke-Tick {
                         if (New-Lock -LockDir $lockDir -SlotId $slotId) {
                             $libRows = Import-Tsv2 -Path (Join-Path $modeRoot 'config\library.tsv')
                             $libRow = $libRows | Where-Object { $_.optionId -eq $pick } | Select-Object -First 1
-                            $dialogArgs = @(
-                                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-                                '-File', (Join-Path $Root 'runtime\dialog.ps1'),
-                                '-ModeRoot', $modeRoot, '-Mode', $mode, '-SlotId', $slotId,
-                                '-ScheduledTs', $scheduledTs.ToString('o'), '-Type', $slot.type,
-                                '-OptionId', $pick, '-MinSeconds', $libRow.minSeconds,
-                                '-Action', $libRow.instruction, '-Dose', $libRow.dose, '-Why', $libRow.why
-                            )
-                            Start-Process -FilePath 'powershell.exe' -ArgumentList $dialogArgs -WindowStyle Hidden | Out-Null
+                            Start-DetachedScript -ScriptPath (Join-Path $Root 'runtime\dialog.ps1') -NamedArgs @{
+                                ModeRoot    = $modeRoot; Mode = $mode; SlotId = $slotId
+                                ScheduledTs = $scheduledTs.ToString('o'); Type = $slot.type
+                                OptionId    = $pick; MinSeconds = $libRow.minSeconds
+                                Action      = $libRow.instruction; Dose = $libRow.dose; Why = $libRow.why
+                            }
                             $state.lastShownTs = $now.ToString('o')
                         }
                         break

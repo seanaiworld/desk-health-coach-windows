@@ -45,38 +45,44 @@ function Show-ReminderForm {
     $form.ClientSize = New-Object System.Drawing.Size(420, 220)
     $form.BackColor = [System.Drawing.Color]::White
 
-    $label = New-Object System.Windows.Forms.Label
-    $label.Text = $Body
-    $label.ForeColor = [System.Drawing.Color]::Black
-    $label.AutoSize = $false
-    $label.Size = New-Object System.Drawing.Size(380, 140)
-    $label.Location = New-Object System.Drawing.Point(20, 20)
-    $form.Controls.Add($label)
-
+    # The warning (when present) reserves its own row at the top, and the body label shifts
+    # down to start below it -- both always end at y=150, a clear 5px gap above the buttons'
+    # top edge (y=155), so neither ever overlaps the buttons or each other.
     if ($NotSoFast) {
         $warn = New-Object System.Windows.Forms.Label
         $warn.Text = 'Not so fast -- give it a few more seconds.'
         $warn.ForeColor = [System.Drawing.Color]::DarkRed
         $warn.AutoSize = $false
         $warn.Size = New-Object System.Drawing.Size(380, 20)
-        $warn.Location = New-Object System.Drawing.Point(20, 165)
+        $warn.Location = New-Object System.Drawing.Point(20, 10)
         $form.Controls.Add($warn)
+        $labelTop = 35
+    } else {
+        $labelTop = 20
     }
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $Body
+    $label.ForeColor = [System.Drawing.Color]::Black
+    $label.AutoSize = $false
+    $label.Size = New-Object System.Drawing.Size(380, (150 - $labelTop))
+    $label.Location = New-Object System.Drawing.Point(20, $labelTop)
+    $form.Controls.Add($label)
 
     # FlatStyle 'Standard' (the default) is theme-drawn by Windows itself -- under visual
     # styles the OS's own button color scheme wins and an explicit ForeColor is silently
     # ignored, which is what let white-on-white text through on a dark-mode-themed system
-    # even after EnableVisualStyles + ForeColor. 'Flat' is owner-drawn, so BackColor/ForeColor
-    # are guaranteed to be honored regardless of the Windows theme.
+    # even after EnableVisualStyles + ForeColor. 'Flat' avoided that by owner-drawing the
+    # button, but its border (plus the extra default-button highlight ring Windows draws
+    # around Done as AcceptButton) looked wrong. 'System' hands the ENTIRE button, including
+    # text color, to the native Win32 control -- real standard Windows chrome, and native
+    # rendering always keeps its own text readable against its own background, so it can't
+    # reproduce the white-on-white bug the way 'Standard' did.
     $doneBtn = New-Object System.Windows.Forms.Button
     $doneBtn.Text = 'Done'
     $doneBtn.Size = New-Object System.Drawing.Size(100, 32)
-    $doneBtn.Location = New-Object System.Drawing.Point(210, 155)
-    $doneBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-    $doneBtn.FlatAppearance.BorderSize = 1
-    $doneBtn.FlatAppearance.BorderColor = [System.Drawing.Color]::Gray
-    $doneBtn.BackColor = [System.Drawing.Color]::WhiteSmoke
-    $doneBtn.ForeColor = [System.Drawing.Color]::Black
+    $doneBtn.Location = New-Object System.Drawing.Point(20, 155)
+    $doneBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::System
     $doneBtn.DialogResult = [System.Windows.Forms.DialogResult]::Yes
     $form.Controls.Add($doneBtn)
     $form.AcceptButton = $doneBtn
@@ -84,12 +90,8 @@ function Show-ReminderForm {
     $skipBtn = New-Object System.Windows.Forms.Button
     $skipBtn.Text = 'Skip'
     $skipBtn.Size = New-Object System.Drawing.Size(100, 32)
-    $skipBtn.Location = New-Object System.Drawing.Point(320, 155)
-    $skipBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-    $skipBtn.FlatAppearance.BorderSize = 1
-    $skipBtn.FlatAppearance.BorderColor = [System.Drawing.Color]::Gray
-    $skipBtn.BackColor = [System.Drawing.Color]::WhiteSmoke
-    $skipBtn.ForeColor = [System.Drawing.Color]::Black
+    $skipBtn.Location = New-Object System.Drawing.Point(130, 155)
+    $skipBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::System
     $skipBtn.DialogResult = [System.Windows.Forms.DialogResult]::No
     $form.Controls.Add($skipBtn)
 

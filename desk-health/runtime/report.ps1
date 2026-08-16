@@ -29,7 +29,12 @@ $summary = Get-JsonOrDefault -Path (Join-Path $modeRoot 'data\summary.json') -De
     })
 $settingsRows = Import-Tsv2 -Path (Join-Path $modeRoot 'config\settings.tsv')
 $settings = if ($settingsRows.Count -eq 1) { $settingsRows[0] } else { $null }
-$routineRows = @(Import-Tsv2 -Path (Join-Path $modeRoot 'config\routine.tsv') | Where-Object { ConvertTo-Bool01 $_.enabled })
+# Assign first, THEN filter. Import-Tsv2 returns a ",@()"-wrapped array (see common.ps1) so
+# that assignment always yields an array; piping it directly hands Where-Object the entire
+# array as a single pipeline item, whose .enabled member-enumerates to "1 1 1" and matches
+# nothing -- which silently produced an empty enabledRoutine in coach-summary.json.
+$routineRowsAll = Import-Tsv2 -Path (Join-Path $modeRoot 'config\routine.tsv')
+$routineRows = @($routineRowsAll | Where-Object { ConvertTo-Bool01 $_.enabled })
 $changes = @(Read-Jsonl -Path (Join-Path $modeRoot 'data\changes.jsonl') | Select-Object -Last 10)
 
 $todayKey = (Get-Date).ToString('yyyy-MM-dd')

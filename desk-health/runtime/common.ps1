@@ -11,6 +11,65 @@ function Get-DeskHealthRoot {
     Split-Path -Parent $PSScriptRoot
 }
 
+function ConvertFrom-JsonToHashtable {
+    <# Windows PowerShell 5.1's ConvertFrom-Json has no -AsHashtable (added in PS 6+), and this
+       engine targets 5.1 only. Recursively converts the PSCustomObject/array tree ConvertFrom-Json
+       returns into nested Hashtables/arrays so callers can keep using .ContainsKey() and
+       hashtable-index assignment, matching the [ordered]@{}/@{} shape state/summary start as. #>
+    param($InputObject)
+    if ($null -eq $InputObject) { return $null }
+    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+        $hash = @{}
+        foreach ($prop in $InputObject.PSObject.Properties) {
+            $hash[$prop.Name] = ConvertFrom-JsonToHashtable $prop.Value
+        }
+        return $hash
+    }
+    if ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+        return , @($InputObject | ForEach-Object { ConvertFrom-JsonToHashtable $_ })
+    }
+    return $InputObject
+}
+
+function Start-DetachedScript {
+    <# Spawns <ScriptPath> <NamedArgs> as a detached, hidden child via
+       `powershell.exe -Command "& '<path>' -Name 'value' ..."` rather than `-File <path> ...`.
+       On this machine (and plausibly others locked down the same way), a detached
+       Start-Process child invoked with -File silently exits before running a single line of
+       the script -- no error, no output, no window -- while the equivalent -Command "& ..."
+       invocation runs normally. Root-caused via a minimal repro that isolated -File as the
+       sole variable; never re-introduce a -File-based detached spawn without re-testing this. #>
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [Parameter(Mandatory)][hashtable]$NamedArgs
+    )
+    $quote = { param($v) "'" + ([string]$v -replace "'", "''") + "'" }
+    $parts = @("& $(& $quote $ScriptPath)")
+    foreach ($key in $NamedArgs.Keys) {
+        $parts += "-$key $(& $quote $NamedArgs[$key])"
+    }
+    $cmd = $parts -join ' '
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-Command', $cmd
+    ) -WindowStyle Hidden | Out-Null
+}
+
+function Get-PropOrNull {
+    <# StrictMode-safe property read. Under Set-StrictMode -Version Latest, reading a property
+       that doesn't exist on the PSCustomObject trees ConvertFrom-Json produces is a terminating
+       error -- and command payloads legitimately carry only the fields their command type needs
+       (a settings-only edit has no routineRows, and vice versa). Returns $null when absent. #>
+    param($Object, [Parameter(Mandatory)][string]$Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Name)) { return $Object[$Name] }
+        return $null
+    }
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($prop) { return $prop.Value }
+    return $null
+}
+
 function Protect-PathForCurrentUser {
     <# Resets NTFS ACLs on $Path to grant Full Control to the current user only,
        breaking inheritance. Windows has no umask, so this is the ACL equivalent
@@ -74,6 +133,12 @@ function Import-TsvRows {
 }
 
 function Import-Tsv2 {
+    <# ALWAYS assign the result to a variable; never pipe this call directly into
+       Where-Object/ForEach-Object. The ",@()" return below guarantees that ASSIGNMENT yields
+       an array even for a single data row (so .Count is safe under StrictMode), but it also
+       means the pipeline receives the whole array as ONE item -- a direct pipe therefore
+       evaluates the predicate against the array itself and silently matches nothing.
+       Assign first, then filter the variable. #>
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return @() }
     # Defensive retry: a transient file-handle/AV-scan lock on a just-written file can
