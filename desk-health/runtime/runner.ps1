@@ -77,6 +77,15 @@ function Save-Summary {
     Set-AtomicJson -Path (Join-Path $ModeRoot 'data\summary.json') -Object $Summary
 }
 
+function Add-BucketCount {
+    <# Bumps a done/skipped/excluded counter inside a summary sub-map (byType or
+       byTimeBucket), creating the bucket's {done,skipped,excluded} entry on first use. #>
+    param($Map, [Parameter(Mandatory)][string]$Key, [Parameter(Mandatory)][ValidateSet('done', 'skipped', 'excluded')][string]$Field)
+    $bucket = $Map[$Key]
+    if (-not $bucket) { $bucket = @{ done = 0; skipped = 0; excluded = 0 }; $Map[$Key] = $bucket }
+    $bucket[$Field] = [int]$bucket[$Field] + 1
+}
+
 function Write-Heartbeat {
     param([string]$Root)
     $line = (Get-Date).ToString('o')
@@ -224,6 +233,9 @@ function Receive-DialogResult {
         $day = $Summary.byDay["$($State.currentDay)"]
         if (-not $day) { $day = @{ done = 0; skipped = 0; excluded = 0 }; $Summary.byDay["$($State.currentDay)"] = $day }
         if ($outcome -eq 'done') { $day.done = [int]$day.done + 1 } else { $day.skipped = [int]$day.skipped + 1 }
+        Add-BucketCount -Map $Summary.byType -Key $res.type -Field $outcome
+        $hourBucket = ([datetime]$res.scheduledTs).ToString('HH')
+        Add-BucketCount -Map $Summary.byTimeBucket -Key $hourBucket -Field $outcome
         $Summary.score = [int]$Summary.score + $points
         if ($outcome -eq 'done') { $Summary.combo = [int]$day.done } else { $Summary.combo = $Summary.combo }
 
@@ -314,6 +326,11 @@ function Invoke-Tick {
                                 })
                             $state.settledSlots[[string]$slotId] = 'excluded-unshown'
                             $summary.excludedByReason['excluded-unshown'] = [int]($summary.excludedByReason['excluded-unshown']) + 1
+                            $day = $summary.byDay["$($state.currentDay)"]
+                            if (-not $day) { $day = @{ done = 0; skipped = 0; excluded = 0 }; $summary.byDay["$($state.currentDay)"] = $day }
+                            $day.excluded = [int]$day.excluded + 1
+                            Add-BucketCount -Map $summary.byType -Key $slot.type -Field 'excluded'
+                            Add-BucketCount -Map $summary.byTimeBucket -Key $scheduledTs.ToString('HH') -Field 'excluded'
                             continue
                         }
                         if ($now -lt $scheduledTs) { continue }
@@ -341,6 +358,11 @@ function Invoke-Tick {
                                 })
                             $state.settledSlots[[string]$slotId] = $outcome
                             $summary.excludedByReason[$outcome] = [int]($summary.excludedByReason[$outcome]) + 1
+                            $day = $summary.byDay["$($state.currentDay)"]
+                            if (-not $day) { $day = @{ done = 0; skipped = 0; excluded = 0 }; $summary.byDay["$($state.currentDay)"] = $day }
+                            $day.excluded = [int]$day.excluded + 1
+                            Add-BucketCount -Map $summary.byType -Key $slot.type -Field 'excluded'
+                            Add-BucketCount -Map $summary.byTimeBucket -Key $scheduledTs.ToString('HH') -Field 'excluded'
                             continue
                         }
 

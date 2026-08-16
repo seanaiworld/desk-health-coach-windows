@@ -5,6 +5,8 @@ desk-health/config/
 desk-health/data/
 desk-health/state/
 desk-health/runtime/tick.log
+desk-health/runtime/*.log
+desk-health/runtime/mode
 desk-health/dashboard.html
 desk-health/coach-summary.json
 desk-health/installed-files.txt

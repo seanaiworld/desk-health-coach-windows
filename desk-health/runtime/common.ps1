@@ -65,10 +65,26 @@ function Test-SafeTsvField {
     return -not ($Value -match "[\t\r\n]" -or ($Value -match '[\x00-\x08\x0B\x0C\x0E-\x1F]'))
 }
 
+function Import-TsvRows {
+    <# Internal: a plain (non-array-wrapped) helper so the retry loop below can hold an
+       intermediate result in a variable without PowerShell's array-vs-scalar assignment
+       quirks -- only the final Import-Tsv2 return statement needs the ",@()" idiom. #>
+    param([string]$Path)
+    Import-Csv -LiteralPath $Path -Delimiter "`t"
+}
+
 function Import-Tsv2 {
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return @() }
-    return , @(Import-Csv -LiteralPath $Path -Delimiter "`t")
+    # Defensive retry: a transient file-handle/AV-scan lock on a just-written file can
+    # occasionally yield a spuriously empty read even though the file has data rows.
+    $lineCount = @(Get-Content -LiteralPath $Path).Count
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $count = @(Import-TsvRows -Path $Path).Count
+        if ($count -gt 0 -or $lineCount -le 1) { break }
+        Start-Sleep -Milliseconds 100
+    }
+    return , @(Import-TsvRows -Path $Path)
 }
 
 function Export-Tsv2 {

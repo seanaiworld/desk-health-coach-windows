@@ -24,6 +24,11 @@ param(
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# Without this, buttons fall back to unthemed classic rendering, and the focused/default
+# button (Done, as AcceptButton) can repaint with white-on-white text once the form redraws
+# for the "Not so fast" warning label -- must be called before any Form/control is created.
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
 . (Join-Path $PSScriptRoot 'common.ps1')
 
 $shownAt = Get-Date
@@ -38,9 +43,11 @@ function Show-ReminderForm {
     $form.MinimizeBox = $false
     $form.MaximizeBox = $false
     $form.ClientSize = New-Object System.Drawing.Size(420, 220)
+    $form.BackColor = [System.Drawing.Color]::White
 
     $label = New-Object System.Windows.Forms.Label
     $label.Text = $Body
+    $label.ForeColor = [System.Drawing.Color]::Black
     $label.AutoSize = $false
     $label.Size = New-Object System.Drawing.Size(380, 140)
     $label.Location = New-Object System.Drawing.Point(20, 20)
@@ -56,10 +63,20 @@ function Show-ReminderForm {
         $form.Controls.Add($warn)
     }
 
+    # FlatStyle 'Standard' (the default) is theme-drawn by Windows itself -- under visual
+    # styles the OS's own button color scheme wins and an explicit ForeColor is silently
+    # ignored, which is what let white-on-white text through on a dark-mode-themed system
+    # even after EnableVisualStyles + ForeColor. 'Flat' is owner-drawn, so BackColor/ForeColor
+    # are guaranteed to be honored regardless of the Windows theme.
     $doneBtn = New-Object System.Windows.Forms.Button
     $doneBtn.Text = 'Done'
     $doneBtn.Size = New-Object System.Drawing.Size(100, 32)
     $doneBtn.Location = New-Object System.Drawing.Point(210, 155)
+    $doneBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $doneBtn.FlatAppearance.BorderSize = 1
+    $doneBtn.FlatAppearance.BorderColor = [System.Drawing.Color]::Gray
+    $doneBtn.BackColor = [System.Drawing.Color]::WhiteSmoke
+    $doneBtn.ForeColor = [System.Drawing.Color]::Black
     $doneBtn.DialogResult = [System.Windows.Forms.DialogResult]::Yes
     $form.Controls.Add($doneBtn)
     $form.AcceptButton = $doneBtn
@@ -68,6 +85,11 @@ function Show-ReminderForm {
     $skipBtn.Text = 'Skip'
     $skipBtn.Size = New-Object System.Drawing.Size(100, 32)
     $skipBtn.Location = New-Object System.Drawing.Point(320, 155)
+    $skipBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $skipBtn.FlatAppearance.BorderSize = 1
+    $skipBtn.FlatAppearance.BorderColor = [System.Drawing.Color]::Gray
+    $skipBtn.BackColor = [System.Drawing.Color]::WhiteSmoke
+    $skipBtn.ForeColor = [System.Drawing.Color]::Black
     $skipBtn.DialogResult = [System.Windows.Forms.DialogResult]::No
     $form.Controls.Add($skipBtn)
 
